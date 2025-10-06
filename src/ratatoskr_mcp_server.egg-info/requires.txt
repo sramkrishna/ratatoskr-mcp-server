@@ -1,0 +1,13 @@
+mcp<2.0.0,>=1.0.0
+pygobject>=3.42.0
+pydantic<3.0.0,>=2.0.0
+anyio<5.0.0,>=3.0.0
+dbus-python>=1.2.0
+pycairo>=1.20.0
+
+[dev]
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+mypy>=1.0.0
+black>=23.0.0
+ruff>=0.1.0

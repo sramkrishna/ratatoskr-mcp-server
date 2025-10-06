@@ -1,0 +1,2 @@
+[console_scripts]
+ratatoskr-mcp-server = ratatoskr_mcp_server.server:cli_main
