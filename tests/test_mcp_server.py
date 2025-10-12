@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 
 import pytest
 from mcp import ClientSession, StdioServerParameters
@@ -11,7 +12,7 @@ from mcp.client.stdio import stdio_client
 async def create_session():
     """Helper to create an MCP client session."""
     server_params = StdioServerParameters(
-        command="python3.13",
+        command=sys.executable,
         args=["src/ratatoskr_mcp_server/server.py"],
         env=dict(os.environ),
     )

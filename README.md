@@ -1,33 +1,3 @@
-Metadata-Version: 2.4
-Name: ratatoskr-mcp-server
-Version: 0.1.0
-Summary: MCP Server for GNOME integration
-Author-email: Your Name <your.email@example.com>
-Keywords: mcp,gnome,server
-Classifier: Development Status :: 3 - Alpha
-Classifier: Intended Audience :: Developers
-Classifier: License :: OSI Approved :: MIT License
-Classifier: Programming Language :: Python :: 3
-Classifier: Programming Language :: Python :: 3.9
-Classifier: Programming Language :: Python :: 3.10
-Classifier: Programming Language :: Python :: 3.11
-Classifier: Programming Language :: Python :: 3.12
-Classifier: Programming Language :: Python :: 3.13
-Requires-Python: >=3.9
-Description-Content-Type: text/markdown
-Requires-Dist: mcp<2.0.0,>=1.0.0
-Requires-Dist: pygobject>=3.42.0
-Requires-Dist: pydantic<3.0.0,>=2.0.0
-Requires-Dist: anyio<5.0.0,>=3.0.0
-Requires-Dist: dbus-python>=1.2.0
-Requires-Dist: pycairo>=1.20.0
-Provides-Extra: dev
-Requires-Dist: pytest>=7.0.0; extra == "dev"
-Requires-Dist: pytest-asyncio>=0.21.0; extra == "dev"
-Requires-Dist: mypy>=1.0.0; extra == "dev"
-Requires-Dist: black>=23.0.0; extra == "dev"
-Requires-Dist: ruff>=0.1.0; extra == "dev"
-
 # Ratatoskr MCP Server
 
 MCP Server for GNOME integration, providing access to GNOME desktop information and system details via the Model Context Protocol.
@@ -47,21 +17,25 @@ MCP Server for GNOME integration, providing access to GNOME desktop information 
 ## Installation
 
 ```bash
+python3.13 -m venv .venv
+source .venv/bin/activate
 pip install -e .
 ```
 
-**Note:** If you're using Python 3.14+, some dependencies (pydantic-core) may fail to build. Use Python 3.13 or earlier for now.
+**Note:**
+- Use Python 3.13 or earlier (Python 3.14+ not yet supported due to pydantic-core compatibility)
+- This server requires D-Bus access to query GNOME, so it must run directly on the host system, not in containers
 
 ## Usage
 
 ### Running the Server
 
+**Direct execution:**
 ```bash
-python src/ratatoskr_mcp_server/server.py
+python3.13 src/ratatoskr_mcp_server/server.py
 ```
 
-Or use the installed command:
-
+**Or use the installed command:**
 ```bash
 ratatoskr-mcp-server
 ```

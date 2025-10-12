@@ -1,3 +1,4 @@
+README.md
 pyproject.toml
 src/ratatoskr_mcp_server/__init__.py
 src/ratatoskr_mcp_server/server.py
@@ -7,7 +8,8 @@ src/ratatoskr_mcp_server.egg-info/dependency_links.txt
 src/ratatoskr_mcp_server.egg-info/entry_points.txt
 src/ratatoskr_mcp_server.egg-info/requires.txt
 src/ratatoskr_mcp_server.egg-info/top_level.txt
-src/ratatoskr_mcp_server/dbus/__init__.py
-src/ratatoskr_mcp_server/dbus/base.py
-src/ratatoskr_mcp_server/dbus/gnome.py
-src/ratatoskr_mcp_server/dbus/gnome_shell.py
+src/ratatoskr_mcp_server/dbus_providers/__init__.py
+src/ratatoskr_mcp_server/dbus_providers/base.py
+src/ratatoskr_mcp_server/dbus_providers/gnome.py
+src/ratatoskr_mcp_server/dbus_providers/gnome_shell.py
+tests/test_mcp_server.py
