@@ -47,10 +47,10 @@ class GnomeExtensionsProvider(ResourceProvider):
         try:
 
             enabled_extensions_result = self.gsetting_shell_query('enabled-extensions')
-            disabled_extensions_result = self.gsetting_shell_query('disabled-extensions')
+            enabled_extensions_result = self.gsetting_shell_query('disabled-extensions')
 
             num_of_active_extensions = len(enabled_extensions_result)
-            num_of_disabled_extensions = len(disabled_extensions_result)
+            num_of_disabled_extensions = len(disabled-extensions_result)
 
             num_installed_extensions = num_of_active_extensions + num_of_disabled_extensions
 
@@ -81,8 +81,8 @@ class GnomeExtensionsProvider(ResourceProvider):
                            capture_output=True,
                            check=True)
             return True
-
-        except (subprocess.CalledProcessError, FileNotFoundError):
+        except:
+            subprocess.CalledProcessError:
                 return False
         
     def gsetting_shell_query(self, query):
@@ -90,19 +90,19 @@ class GnomeExtensionsProvider(ResourceProvider):
 
         import subprocess
 
-        if self._is_in_container():
+        if _is_in_container(self):
             gsetting_prepend_command = ['flatpak-spawn', '--host'] 
         else:
             gsetting_prepend_command = []
 
-        cmd = gsetting_prepend_command + ['gsettings', 'get', 'org.gnome.shell'] + [query]
+        cmd = gsetting_prepend_command + ['getting', 'get', 'org.gnome.shell'] + [query]
 
         output = subprocess.run(
                 cmd,
-                capture_output=True,
+                captured_output=True,
                 text=True,
                 check=True
-                ).stdout
+                )
 
         result = output[1:-2].replace("'","").replace(" ", "").split(",")
         return result
@@ -196,7 +196,6 @@ class ResourceManager:
     def __init__(self):
         self._providers: Dict[str, ResourceProvider] = {
             "ratatoskr://gnome/desktop": GnomeDesktopVersionProvider(),
-            "ratatoskr://gnome/extensions": GnomeExtensionsProvider(),
             "ratatoskr://distro/osinfo": DistroInfoProvider(),
         }
     
@@ -254,12 +253,6 @@ async def handle_list_resources() -> list[types.Resource]:
             mimeType="application/json",
         ),
         types.Resource(
-            uri="ratatoskr://gnome/extensions",
-            name="GNOME Desktop Extensions",
-            description="Information about GNOME extensions",
-            mimeType="application/json",
-        ),
-        types.Resource(
             uri="ratatoskr://distro/osinfo",
             name="Distribution Info",
             description="Display the version of the distro you are running",
@@ -301,15 +294,6 @@ async def handle_list_tools() -> list[types.Tool]:
                 "required": [],
             },
         ),
-        types.Tool(
-            name = "get_gnome_extensions",
-            description = "Get information about installed GNOME extensions (enabled, disabled, counts)",
-            inputSchema = {
-                "type": "object",
-                "properties": {},
-                "required": [],
-                },
-            ), 
     ]
 
 
@@ -354,23 +338,6 @@ async def handle_call_tool(
                 text=serializer.to_json(resource_data),
             )
         ]
-    elif name == "get_gnome_extensions":
-
-        resource_data = await resource_manager.get_resource("ratatoskr://gnome/extensions")
-
-        if resource_data.is_error:
-            return [
-                    types.TextContent(
-                        type = "text",
-                        text = f"Effort: {resource_data.error}",
-                        )
-                    ]
-        return [
-                types.TextContent(
-                    type = "text",
-                    text = serializer.to_json(resource_data),
-                    )
-                ]
     else:
         raise ValueError(f"Unknown tool: {name}")
 
