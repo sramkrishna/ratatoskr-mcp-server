@@ -13,7 +13,11 @@ from .file_stats import FileStatisticsProvider
 from .file_search import FileSearchProvider
 from .document_content import DocumentContentProvider
 from .image_analyzer import ImageAnalyzerProvider
-from .face_manager import FaceManagerProvider
+# from .face_manager import FaceManagerProvider  # Disabled - requires face_recognition
+from .calendar import CalendarProvider
+from .planify import PlanifyProvider
+from .email import EmailProvider
+# from .muninn import MuninnProvider  # Disabled - Muninn is a separate MCP server
 
 __all__ = [
     "ResourceProvider",
@@ -29,5 +33,9 @@ __all__ = [
     "FileSearchProvider",
     "DocumentContentProvider",
     "ImageAnalyzerProvider",
-    "FaceManagerProvider",
+    # "FaceManagerProvider",  # Disabled - requires face_recognition
+    "CalendarProvider",
+    "PlanifyProvider",
+    "EmailProvider",
+    # "MuninnProvider",  # Disabled - Muninn is a separate MCP server
 ]

@@ -10,7 +10,7 @@ from mcp.server.lowlevel.server import NotificationOptions
 import mcp.server.stdio
 import mcp.types as types
 
-from ratatoskr_mcp_server.resource_manager import ResourceManager, ResourceSerializer
+from ratatoskr_mcp_server.resource_manager import ResourceManager, ResourceSerializer, ResourceData
 from ratatoskr_mcp_server.providers import (
     GnomeDesktopProvider,
     GnomeExtensionsProvider,
@@ -23,19 +23,52 @@ from ratatoskr_mcp_server.providers import (
     FileSearchProvider,
     DocumentContentProvider,
     ImageAnalyzerProvider,
-    FaceManagerProvider,
+    # FaceManagerProvider,  # Disabled - requires face_recognition
+    CalendarProvider,
+    PlanifyProvider,
+    EmailProvider,
+    # MuninnProvider,  # Disabled - Muninn is a separate MCP server
 )
 from ratatoskr_mcp_server.monitors import AppLaunchMonitor, DBusLaunchMonitor, SystemdLaunchMonitor
+from ratatoskr_mcp_server.utils.planify import PlanifyManager
+from ratatoskr_mcp_server.utils.notifications import NotificationManager, NotificationUrgency
+from ratatoskr_mcp_server.utils.xdg_helpers import compose_email, create_calendar_event
+from ratatoskr_mcp_server.utils.evolution_contacts import EvolutionContactsManager
+from ratatoskr_mcp_server.utils.contact_communication_analysis import ContactCommunicationAnalyzer
+from ratatoskr_mcp_server.utils.sent_email_analysis import SentEmailAnalyzer
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("ratatoskr-mcp-server")
+# Configure logging with support for LOG_LEVEL environment variable
+import os
+log_level_str = os.getenv("LOG_LEVEL", "INFO").upper()
+log_level = getattr(logging, log_level_str, logging.INFO)
+
+# Configure logging to file if LOG_FILE is set, otherwise use stderr
+log_file = os.getenv("LOG_FILE")
+if log_file:
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        filename=log_file,
+        filemode='a'
+    )
+else:
+    logging.basicConfig(level=log_level)
+
+logger = logging.getLogger("ratatoskr_mcp_server")
 
 
 # Initialize app launch monitor (will be started in main())
 app_launch_monitor = None
 
+# Check if Planify is available
+PLANIFY_AVAILABLE = PlanifyManager.is_available()
+if PLANIFY_AVAILABLE:
+    logger.info("Planify detected - enabling task management features")
+else:
+    logger.info("Planify not found - task management features disabled")
+
 # Initialize resource manager with providers
-resource_manager = ResourceManager({
+resources = {
     "ratatoskr://gnome/desktop": GnomeDesktopProvider(),
     "ratatoskr://gnome/extensions": GnomeExtensionsProvider(),
     "ratatoskr://gnome/favorite-apps": GnomeFavoriteAppsProvider(),
@@ -44,7 +77,14 @@ resource_manager = ResourceManager({
     "ratatoskr://tracker/project-files": ProjectFilesProvider(),
     "ratatoskr://tracker/file-stats": FileStatisticsProvider(),
     "ratatoskr://distro/osinfo": DistroInfoProvider(),
-})
+    "ratatoskr://calendar/events": CalendarProvider(),
+}
+
+# Add Planify resource if available
+if PLANIFY_AVAILABLE:
+    resources["ratatoskr://planify/tasks"] = PlanifyProvider()
+
+resource_manager = ResourceManager(resources)
 
 # Initialize file search provider (needs to handle parameters, so not in resource_manager)
 file_search_provider = FileSearchProvider()
@@ -56,7 +96,59 @@ document_content_provider = DocumentContentProvider()
 image_analyzer_provider = ImageAnalyzerProvider()
 
 # Initialize face manager provider (needs action parameter)
-face_manager_provider = FaceManagerProvider()
+# face_manager_provider = FaceManagerProvider()  # Disabled - requires face_recognition
+
+# Initialize calendar provider (needs query parameters)
+calendar_provider = CalendarProvider()
+
+# Initialize Planify provider if available
+if PLANIFY_AVAILABLE:
+    planify_provider = PlanifyProvider()
+else:
+    planify_provider = None
+
+# Initialize email provider
+email_provider = EmailProvider()
+
+# Initialize contacts manager
+try:
+    contacts_manager = EvolutionContactsManager()
+    CONTACTS_AVAILABLE = True
+    logger.info("Evolution contacts detected - enabling contact search features")
+except Exception as e:
+    contacts_manager = None
+    CONTACTS_AVAILABLE = False
+    logger.info(f"Evolution contacts not available: {e}")
+
+# Initialize contact communication analyzer
+try:
+    communication_analyzer = ContactCommunicationAnalyzer()
+    COMM_ANALYSIS_AVAILABLE = True
+    logger.info("Contact communication analyzer initialized")
+except Exception as e:
+    communication_analyzer = None
+    COMM_ANALYSIS_AVAILABLE = False
+    logger.info(f"Contact communication analyzer not available: {e}")
+
+# Initialize sent email analyzer
+try:
+    sent_email_analyzer = SentEmailAnalyzer()
+    SENT_EMAIL_ANALYSIS_AVAILABLE = True
+    logger.info("Sent email analyzer initialized")
+except Exception as e:
+    sent_email_analyzer = None
+    SENT_EMAIL_ANALYSIS_AVAILABLE = False
+    logger.info(f"Sent email analyzer not available: {e}")
+
+# Initialize Muninn memory provider
+# muninn_provider = MuninnProvider()  # Disabled - Muninn is a separate MCP server
+# Create a dummy provider that's never available
+class DummyMuninnProvider:
+    available = False
+muninn_provider = DummyMuninnProvider()
+
+# Initialize notification manager
+notification_manager = NotificationManager()
 
 serializer = ResourceSerializer()
 server = Server("ratatoskr-mcp-server")
@@ -65,7 +157,7 @@ server = Server("ratatoskr-mcp-server")
 @server.list_resources()
 async def handle_list_resources() -> list[types.Resource]:
     """List all available resources."""
-    return [
+    resources_list = [
         types.Resource(
             uri="ratatoskr://gnome/desktop",
             name="GNOME Desktop Environment",
@@ -113,8 +205,27 @@ async def handle_list_resources() -> list[types.Resource]:
             name="Distribution Info",
             description="Display the version of the distro you are running",
             mimeType="application/json",
-        )
+        ),
+        types.Resource(
+            uri="ratatoskr://calendar/events",
+            name="Calendar Events",
+            description="Upcoming calendar events from all configured calendars (local and online)",
+            mimeType="application/json",
+        ),
     ]
+
+    # Add Planify resource if available
+    if PLANIFY_AVAILABLE:
+        resources_list.append(
+            types.Resource(
+                uri="ratatoskr://planify/tasks",
+                name="Planify Tasks",
+                description="Tasks and to-dos from Planify task manager (if installed)",
+                mimeType="application/json",
+            )
+        )
+
+    return resources_list
 
 
 @server.read_resource()
@@ -131,7 +242,7 @@ async def handle_read_resource(uri: types.AnyUrl) -> str:
 @server.list_tools()
 async def handle_list_tools() -> list[types.Tool]:
     """List available GNOME tools."""
-    return [
+    tools_list = [
         types.Tool(
             name="get_desktop_info",
             description="Get information about the GNOME desktop environment",
@@ -443,7 +554,568 @@ async def handle_list_tools() -> list[types.Tool]:
                 "required": ["action"],
             },
         ),
+        types.Tool(
+            name="query_calendar_events",
+            description="Query calendar events from all configured calendars. Returns event times, titles, locations, descriptions - but NOT attendee/participant info. DO NOT USE this tool if the query mentions specific people (names, emails) or asks WHO attended meetings. Use query_calendar_events_with_attendees instead for any people-related queries. Supports date ranges like 'yesterday', 'today', 'tomorrow', or ISO dates. IMPORTANT: Use start_date parameter, not 'date'. Example: For today's events, use {\"start_date\": \"today\"}.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "start_date": {
+                        "type": "string",
+                        "description": "Start date for query (REQUIRED parameter name is 'start_date', not 'date'!). Can be 'yesterday', 'today', 'tomorrow', or ISO format (YYYY-MM-DD). For queries like 'past week' or 'last month', calculate the actual date in ISO format (e.g., for 'past week' use date from 7 days ago). If not specified, defaults to now (which may miss past events today).",
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": "End date for query in ISO format (YYYY-MM-DD). For queries like 'past week', set this to today's date. If not specified, end of start_date is used.",
+                    },
+                    "days_ahead": {
+                        "type": "number",
+                        "description": "Number of days ahead to query from start_date (alternative to end_date). NOTE: Use negative values for looking back in time is NOT supported - use explicit start_date and end_date instead. Default is 0 (just the start date).",
+                    },
+                    "calendar_uids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of calendar UIDs to filter by. If not provided, queries all calendars.",
+                    },
+                },
+                "required": [],
+            },
+        ),
+        types.Tool(
+            name="query_calendar_events_with_attendees",
+            description="Query calendar events WITH full attendee/participant lists. REQUIRED when the query mentions ANY person's name or asks about WHO attended. Examples that REQUIRE this tool: 'meetings with Alison', 'who attended the standup', 'meetings that has john in it', 'show me Sarah's meetings last week'. Returns email, name, role, and RSVP status for each attendee. IMPORTANT: This tool returns ALL events with their attendee lists - you must then filter the results yourself to find events where a specific person attended by checking the 'attendees' array in each event.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "start_date": {
+                        "type": "string",
+                        "description": "Start date for query. Can be 'yesterday', 'today', 'tomorrow', or ISO format (YYYY-MM-DD). For queries like 'past week' or 'last month', calculate the actual date in ISO format (e.g., for 'past week' use date from 7 days ago). If not specified, defaults to now.",
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": "End date for query in ISO format (YYYY-MM-DD). For queries like 'past week', set this to today's date. If not specified, end of start_date is used.",
+                    },
+                    "days_ahead": {
+                        "type": "number",
+                        "description": "Number of days ahead to query from start_date (alternative to end_date). NOTE: Use negative values for looking back in time is NOT supported - use explicit start_date and end_date instead. Default is 0 (just the start date).",
+                    },
+                    "calendar_uids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of calendar UIDs to filter by. If not provided, queries all calendars.",
+                    },
+                },
+                "required": [],
+            },
+        ),
     ]
+
+    # Add Planify tools if available
+    if PLANIFY_AVAILABLE:
+        tools_list.extend([
+            types.Tool(
+                name="query_planify_tasks",
+                description="Query tasks from Planify task manager. Supports filtering by completion status, project, priority, and due dates. CRITICAL RULES: (1) When user asks for 'upcoming tasks', 'todos', or 'things to do', ALWAYS use completed=false to exclude finished tasks. (2) When user asks for 'today's tasks' or 'this week', DO NOT use due_date parameter - query with completed=false (no date filter) to get ALL uncompleted tasks, then filter by date in your response. (3) The due_date parameter is ONLY for exact date matching (e.g., 'tasks due on Nov 15'). (4) 'Upcoming' means future or current dates - use hugin_get_current_date to check today's date, then exclude tasks with past due dates from your response.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "completed": {
+                            "type": "boolean",
+                            "description": "Filter by completion status. IMPORTANT: When user asks for 'upcoming tasks', 'todos', 'things to do', or 'what do I need to work on', you MUST use completed=false to exclude finished tasks! If true, returns only completed tasks. If false, returns only incomplete/active tasks. If omitted, returns both completed and incomplete (rarely useful).",
+                        },
+                        "project_id": {
+                            "type": "string",
+                            "description": "Filter tasks by project ID. Use get_planify_projects to get available project IDs.",
+                        },
+                        "priority": {
+                            "type": "number",
+                            "description": "Filter by priority level: 1 (low), 2 (medium), 3 (high), 4 (urgent).",
+                        },
+                        "has_due_date": {
+                            "type": "boolean",
+                            "description": "Filter by due date presence. If true, returns ONLY tasks with due dates. If false, returns ONLY tasks without due dates. If omitted, returns both. Example use case: To get tasks without due dates, use has_due_date=false.",
+                        },
+                        "due_date": {
+                            "type": "string",
+                            "description": "Filter tasks by EXACT due date match in ISO format (YYYY-MM-DD). Only use this when user asks for tasks due on a SPECIFIC date (e.g., 'tasks due on November 15th'). DO NOT use this for queries like 'today's tasks' or 'todos today' - those should use completed=false with no due_date filter to show all uncompleted tasks including overdue ones.",
+                        },
+                        "limit": {
+                            "type": "number",
+                            "description": "Maximum number of tasks to return (default: 50).",
+                        },
+                    },
+                    "required": [],
+                },
+            ),
+            types.Tool(
+                name="get_planify_projects",
+                description="Get all available projects from Planify task manager. Use this to get project IDs for filtering tasks.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                },
+            ),
+        ])
+
+    # Add email tools if available
+    if email_provider.available:
+        tools_list.extend([
+            types.Tool(
+                name="get_email_accounts",
+                description="Get list of email accounts configured in Evolution. Returns account_id, email_address, and email_count for each account. CRITICAL: Always call this FIRST before query_emails. Map user queries to accounts: 'gmail'→email ending '@gmail.com', 'hotmail'→'@hotmail.com', 'work'→account with most emails. DO NOT default to first account! Match the email address from this list to the user's request, then use that account's account_id in query_emails. Example: User asks 'gmail emails'→call this→find 'sriram.ramkrishna@gmail.com'→use its account_id in query_emails.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                },
+            ),
+            types.Tool(
+                name="get_email_folders",
+                description="Get list of folders for a specific email account.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "account_name": {
+                            "type": "string",
+                            "description": "Email account name (e.g., 'imap.gmail.com'). Use get_email_accounts to see available accounts.",
+                        },
+                    },
+                    "required": ["account_name"],
+                },
+            ),
+            types.Tool(
+                name="query_emails",
+                description="Query emails from Evolution. FAST: Uses SQLite indexes for instant searches across 190,000+ emails. Searches last 7 days by default. Supports filtering by sender, recipient, subject, date. No timeout needed - queries are <1ms!",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "account_name": {
+                            "type": "string",
+                            "description": "Account ID hash (NOT email address!) from get_email_accounts. CRITICAL: When user mentions 'gmail', 'hotmail', or any email address, you MUST call get_email_accounts FIRST to see available accounts, match the user's request to the correct email_address, then use that account's account_id here. DO NOT pass email addresses - only pass the account_id hash (e.g., '6f004791b4e0c36040e307bb52bca86f88fe723e'). If not specified, searches all accounts (slower).",
+                        },
+                        "folder_names": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "List of folder names to search (e.g., ['INBOX', 'Sent Mail']). If not specified, defaults to INBOX and Sent Mail only for performance.",
+                        },
+                        "days_back": {
+                            "type": "number",
+                            "description": "Number of days to look back from today. Default: 7. Can search years of email instantly thanks to SQLite indexing.",
+                        },
+                        "sender": {
+                            "type": "string",
+                            "description": "Filter by sender email address (e.g., 'nikshi@gmail.com'). Case-insensitive partial match.",
+                        },
+                        "recipient": {
+                            "type": "string",
+                            "description": "Filter by recipient email address (in To or CC). Case-insensitive partial match.",
+                        },
+                        "subject_contains": {
+                            "type": "string",
+                            "description": "Filter by text in subject line. Case-insensitive partial match.",
+                        },
+                        "has_attachments": {
+                            "type": "boolean",
+                            "description": "Only return emails with attachments (default: false).",
+                        },
+                        "limit": {
+                            "type": "number",
+                            "description": "Maximum number of emails to return (default: 100).",
+                        },
+                    },
+                    "required": [],
+                },
+            ),
+            types.Tool(
+                name="get_email_content",
+                description="Get full content of a specific email including body and attachments. Use this after query_emails to get the full email content.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "mbox_path": {
+                            "type": "string",
+                            "description": "Path to mbox file (from query_emails result).",
+                        },
+                        "message_offset": {
+                            "type": "string",
+                            "description": "Hex offset of message in mbox file (msgOffset from query_emails result).",
+                        },
+                    },
+                    "required": ["mbox_path"],
+                },
+            ),
+            types.Tool(
+                name="find_ical_emails",
+                description="Find emails with iCalendar (.ics) attachments. Useful for finding meeting invitations and calendar-related emails to add context to appointments.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "account_name": {
+                            "type": "string",
+                            "description": "Email account name (e.g., 'imap.gmail.com'). Required.",
+                        },
+                        "folder_names": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "List of folder names to search (e.g., ['INBOX', 'Sent Mail']). If not specified, defaults to INBOX and Sent Mail only for performance.",
+                        },
+                        "days_back": {
+                            "type": "number",
+                            "description": "Number of days to look back from today. Default: 7 (30s timeout). Use 30 for one month (60s timeout).",
+                        },
+                        "limit": {
+                            "type": "number",
+                            "description": "Maximum number of emails to return (default: 50).",
+                        },
+                    },
+                    "required": ["account_name"],
+                },
+            ),
+        ])
+
+    # Add Muninn memory tools if available
+    if muninn_provider.available:
+        tools_list.extend([
+            types.Tool(
+                name="muninn_remember",
+                description="Store a memory/context about an email conversation. Use this to save discussion summaries, decisions made, action items, or any context about emails for future recall.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "email_message_id": {
+                            "type": "string",
+                            "description": "Email Message-ID from the email metadata.",
+                        },
+                        "email_subject": {
+                            "type": "string",
+                            "description": "Email subject line.",
+                        },
+                        "email_sender": {
+                            "type": "string",
+                            "description": "Email sender.",
+                        },
+                        "email_date": {
+                            "type": "string",
+                            "description": "Email date (ISO format).",
+                        },
+                        "context": {
+                            "type": "string",
+                            "description": "The conversation context, summary, or discussion notes about this email.",
+                        },
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional tags for categorization (e.g., ['work', 'urgent', 'follow-up']).",
+                        },
+                        "notes": {
+                            "type": "string",
+                            "description": "Optional additional notes.",
+                        },
+                    },
+                    "required": ["email_message_id", "email_subject", "email_sender", "email_date", "context"],
+                },
+            ),
+            types.Tool(
+                name="muninn_recall",
+                description="Recall stored memories about email(s). Retrieve past discussion context about specific emails or browse recent memories.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "email_message_id": {
+                            "type": "string",
+                            "description": "Optional: Specific email Message-ID to recall memories for.",
+                        },
+                        "limit": {
+                            "type": "number",
+                            "description": "Maximum number of memories to return (default: 10).",
+                        },
+                    },
+                    "required": [],
+                },
+            ),
+            types.Tool(
+                name="muninn_search",
+                description="Semantically search through email memories. Find past discussions by topic, keyword, or context even if exact words don't match.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query (e.g., 'discussions about the Filigran opportunity', 'meetings with John').",
+                        },
+                        "limit": {
+                            "type": "number",
+                            "description": "Maximum number of results (default: 10).",
+                        },
+                        "sender": {
+                            "type": "string",
+                            "description": "Optional: Filter by sender email address.",
+                        },
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional: Filter by tags.",
+                        },
+                    },
+                    "required": ["query"],
+                },
+            ),
+            types.Tool(
+                name="muninn_update",
+                description="Update an existing email memory with new context, tags, or notes.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "memory_id": {
+                            "type": "string",
+                            "description": "Memory ID to update (from muninn_recall or muninn_search results).",
+                        },
+                        "context": {
+                            "type": "string",
+                            "description": "Optional: New context to replace existing.",
+                        },
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional: New tags to replace existing.",
+                        },
+                        "notes": {
+                            "type": "string",
+                            "description": "Optional: New notes to replace existing.",
+                        },
+                    },
+                    "required": ["memory_id"],
+                },
+            ),
+            types.Tool(
+                name="muninn_forget",
+                description="Delete a memory. Use with caution - this cannot be undone.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "memory_id": {
+                            "type": "string",
+                            "description": "Memory ID to delete.",
+                        },
+                    },
+                    "required": ["memory_id"],
+                },
+            ),
+            types.Tool(
+                name="muninn_stats",
+                description="Get statistics about stored memories (total count, unique senders, tags, etc.).",
+                inputSchema={
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                },
+            ),
+        ])
+
+    # Notification tools (always available)
+    tools_list.extend([
+        types.Tool(
+            name="send_notification",
+            description="Send a GNOME desktop notification. Use this to alert the user about important events, reminders, or status updates. Examples: new CalGator events, task deadlines approaching, system alerts, completed background operations.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Notification title (short, attention-grabbing)",
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Notification body text (detailed message)",
+                    },
+                    "urgency": {
+                        "type": "string",
+                        "enum": ["low", "normal", "critical"],
+                        "description": "Urgency level: 'low' for FYI, 'normal' for info, 'critical' for urgent alerts that need immediate attention",
+                    },
+                    "icon": {
+                        "type": "string",
+                        "description": "Icon name (e.g., 'dialog-information', 'mail-unread', 'x-office-calendar', 'dialog-warning'). See NotificationIcon class for common icons.",
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "Category hint for grouping (e.g., 'email', 'calendar', 'network', 'im')",
+                    },
+                },
+                "required": ["title", "body"],
+            },
+        ),
+        types.Tool(
+            name="send_urgent_notification",
+            description="Send a CRITICAL notification that won't auto-dismiss. Use for urgent alerts that demand immediate user attention (e.g., deadlines in < 1 hour, critical system issues, important calendar events starting soon). This will stay on screen until user dismisses it.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Urgent notification title",
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Detailed urgent message",
+                    },
+                },
+                "required": ["title", "body"],
+            },
+        ),
+        types.Tool(
+            name="add_todo",
+            description="Open Planify quick-add dialog to create a new todo/task. Use this when the user wants to add a reminder, task, or todo item. The dialog will appear on screen for the user to fill in details.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        ),
+        types.Tool(
+            name="compose_email",
+            description="Open Evolution email composer with pre-filled content. The user can review and edit before sending. Use this when the user wants to draft an email.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "to": {
+                        "type": "string",
+                        "description": "Recipient email address",
+                    },
+                    "subject": {
+                        "type": "string",
+                        "description": "Email subject line",
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Email body content",
+                    },
+                    "cc": {
+                        "type": "string",
+                        "description": "CC recipients (comma-separated, optional)",
+                    },
+                    "bcc": {
+                        "type": "string",
+                        "description": "BCC recipients (comma-separated, optional)",
+                    },
+                },
+                "required": ["to"],
+            },
+        ),
+        types.Tool(
+            name="create_calendar_event",
+            description="Create a calendar event by opening GNOME Calendar with pre-filled event details. The user can review and save. Use this when the user wants to schedule an event or meeting. Supports adding Google Meet conference links.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Event title/summary",
+                    },
+                    "start_time": {
+                        "type": "string",
+                        "description": "Start time in ISO format (YYYY-MM-DDTHH:MM:SS or YYYY-MM-DD for all-day events)",
+                    },
+                    "end_time": {
+                        "type": "string",
+                        "description": "End time in ISO format (same format as start_time)",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Event description/notes (optional)",
+                    },
+                    "location": {
+                        "type": "string",
+                        "description": "Event location (optional)",
+                    },
+                    "all_day": {
+                        "type": "boolean",
+                        "description": "Whether this is an all-day event (default: false)",
+                    },
+                    "video_call_url": {
+                        "type": "string",
+                        "description": "Optional video conferencing URL to add to the event (e.g., Google Meet, Zoom, Jitsi, Teams). Only include this parameter when the user explicitly requests an online/virtual meeting. The link will be added to the event description and as a conference property.",
+                    },
+                },
+                "required": ["title", "start_time", "end_time"],
+            },
+        ),
+        types.Tool(
+            name="query_contacts",
+            description="Search Evolution contacts by name, email, or organization. Returns contact details including emails, phones, and notes.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "General search query (searches name, email, organization)",
+                    },
+                    "email": {
+                        "type": "string",
+                        "description": "Search by specific email address (partial match, optional)",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Search by name (partial match, optional)",
+                    },
+                    "limit": {
+                        "type": "number",
+                        "description": "Maximum contacts to return (default: 50)",
+                    },
+                },
+                "required": [],
+            },
+        ),
+        types.Tool(
+            name="analyze_contact_communications",
+            description="Analyze email communication patterns with contacts efficiently. In ONE QUERY, analyzes all contacts against email history to find: who you've emailed in a time period, most active contacts, communication frequency. Perfect for questions like 'How many contacts have I emailed in the past year?' or 'Who is my most active contact in the past 4 months?' This is much faster than querying each contact individually.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "my_email_addresses": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Your email addresses to analyze (e.g., ['sri@ramkrishna.me', 'sriram.ramkrishna@gmail.com'])",
+                    },
+                    "days_back": {
+                        "type": "number",
+                        "description": "How many days back to analyze (default: 365 for 1 year)",
+                    },
+                    "recent_days": {
+                        "type": "number",
+                        "description": "Optional: analyze most active contacts in recent period (e.g., 120 for 4 months)",
+                    },
+                },
+                "required": ["my_email_addresses"],
+            },
+        ),
+        types.Tool(
+            name="analyze_sent_emails",
+            description="Analyze who you've sent emails to by directly scanning your Sent folders. This works WITHOUT requiring a contact list - it discovers all recipients from your actual email history. Returns statistics about who you email most frequently, when you last emailed them, and identifies your most active correspondents. Perfect for questions like 'Who have I sent the most emails to in the past year?' or 'Who is my most active correspondent in the past 4 months?' Works even if your contacts don't have email addresses stored.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "my_email_addresses": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Your email addresses to analyze (e.g., ['sri@ramkrishna.me', 'sriram.ramkrishna@gmail.com'])",
+                    },
+                    "days_back": {
+                        "type": "number",
+                        "description": "How many days back to analyze (default: 365 for 1 year)",
+                    },
+                    "recent_days": {
+                        "type": "number",
+                        "description": "Optional: analyze most active recipients in recent period (e.g., 120 for 4 months)",
+                    },
+                },
+                "required": ["my_email_addresses"],
+            },
+        ),
+    ])
+
+    return tools_list
 
 
 @server.call_tool()
@@ -530,11 +1202,38 @@ async def handle_call_tool(
         ]
 
     # Handle face management tool
-    if name == "manage_faces":
+    # Disabled - requires face_recognition
+    # if name == "manage_faces":
+    #     args = arguments or {}
+    #
+    #     # Call the face manager provider with parameters
+    #     resource_data = await face_manager_provider.get_resource(**args)
+    #
+    #     if resource_data.is_error:
+    #         return [
+    #             types.TextContent(
+    #                 type="text",
+    #                 text=f"Error: {resource_data.error}",
+    #             )
+    #         ]
+    #
+    #     return [
+    #         types.TextContent(
+    #             type="text",
+    #             text=serializer.to_json(resource_data),
+    #         )
+    #     ]
+
+    if name == "query_calendar_events":
         args = arguments or {}
 
-        # Call the face manager provider with parameters
-        resource_data = await face_manager_provider.get_resource(**args)
+        # Call the calendar provider with parameters
+        resource_data = await calendar_provider.query_events(
+            start_date=args.get('start_date'),
+            end_date=args.get('end_date'),
+            days_ahead=args.get('days_ahead'),
+            calendar_uids=args.get('calendar_uids')
+        )
 
         if resource_data.is_error:
             return [
@@ -548,6 +1247,713 @@ async def handle_call_tool(
             types.TextContent(
                 type="text",
                 text=serializer.to_json(resource_data),
+            )
+        ]
+
+    if name == "query_calendar_events_with_attendees":
+        args = arguments or {}
+
+        # Call the calendar provider with attendees parameter
+        resource_data = await calendar_provider.query_events_with_attendees(
+            start_date=args.get('start_date'),
+            end_date=args.get('end_date'),
+            days_ahead=args.get('days_ahead'),
+            calendar_uids=args.get('calendar_uids')
+        )
+
+        if resource_data.is_error:
+            return [
+                types.TextContent(
+                    type="text",
+                    text=f"Error: {resource_data.error}",
+                )
+            ]
+
+        return [
+            types.TextContent(
+                type="text",
+                text=serializer.to_json(resource_data),
+            )
+        ]
+
+    # Handle Planify tools
+    if name == "query_planify_tasks":
+        if not PLANIFY_AVAILABLE:
+            return [
+                types.TextContent(
+                    type="text",
+                    text="Error: Planify is not installed or not available",
+                )
+            ]
+
+        args = arguments or {}
+
+        # Call the Planify provider with parameters
+        resource_data = await planify_provider.query_tasks(
+            completed=args.get('completed'),
+            project_id=args.get('project_id'),
+            priority=args.get('priority'),
+            has_due_date=args.get('has_due_date'),
+            due_date=args.get('due_date'),
+            limit=args.get('limit')
+        )
+
+        if resource_data.is_error:
+            return [
+                types.TextContent(
+                    type="text",
+                    text=f"Error: {resource_data.error}",
+                )
+            ]
+
+        return [
+            types.TextContent(
+                type="text",
+                text=serializer.to_json(resource_data),
+            )
+        ]
+
+    if name == "get_planify_projects":
+        if not PLANIFY_AVAILABLE:
+            return [
+                types.TextContent(
+                    type="text",
+                    text="Error: Planify is not installed or not available",
+                )
+            ]
+
+        # Call the Planify provider to get projects
+        resource_data = await planify_provider.get_projects()
+
+        if resource_data.is_error:
+            return [
+                types.TextContent(
+                    type="text",
+                    text=f"Error: {resource_data.error}",
+                )
+            ]
+
+        return [
+            types.TextContent(
+                type="text",
+                text=serializer.to_json(resource_data),
+            )
+        ]
+
+    # Handle email tools
+    if name == "get_email_accounts":
+        if not email_provider.available:
+            return [
+                types.TextContent(
+                    type="text",
+                    text="Error: Evolution is not available or not configured",
+                )
+            ]
+
+        resource_data = email_provider.get_accounts()
+
+        if resource_data.is_error:
+            return [
+                types.TextContent(
+                    type="text",
+                    text=f"Error: {resource_data.error}",
+                )
+            ]
+
+        return [
+            types.TextContent(
+                type="text",
+                text=serializer.to_json(resource_data),
+            )
+        ]
+
+    if name == "get_email_folders":
+        if not email_provider.available:
+            return [
+                types.TextContent(
+                    type="text",
+                    text="Error: Evolution is not available or not configured",
+                )
+            ]
+
+        args = arguments or {}
+        account_name = args.get('account_name')
+
+        if not account_name:
+            return [
+                types.TextContent(
+                    type="text",
+                    text="Error: account_name parameter is required",
+                )
+            ]
+
+        resource_data = email_provider.get_folders(account_name)
+
+        if resource_data.is_error:
+            return [
+                types.TextContent(
+                    type="text",
+                    text=f"Error: {resource_data.error}",
+                )
+            ]
+
+        return [
+            types.TextContent(
+                type="text",
+                text=serializer.to_json(resource_data),
+            )
+        ]
+
+    if name == "query_emails":
+        if not email_provider.available:
+            return [
+                types.TextContent(
+                    type="text",
+                    text="Error: Evolution is not available or not configured",
+                )
+            ]
+
+        args = arguments or {}
+
+        resource_data = await email_provider.query_emails(
+            account_name=args.get('account_name'),
+            folder_names=args.get('folder_names'),
+            days_back=args.get('days_back', 30),
+            has_attachments=args.get('has_attachments', False),
+            sender=args.get('sender'),
+            recipient=args.get('recipient'),
+            subject_contains=args.get('subject_contains'),
+            limit=args.get('limit', 100)
+        )
+
+        if resource_data.is_error:
+            return [
+                types.TextContent(
+                    type="text",
+                    text=f"Error: {resource_data.error}",
+                )
+            ]
+
+        return [
+            types.TextContent(
+                type="text",
+                text=serializer.to_json(resource_data),
+            )
+        ]
+
+    if name == "get_email_content":
+        if not email_provider.available:
+            return [
+                types.TextContent(
+                    type="text",
+                    text="Error: Evolution is not available or not configured",
+                )
+            ]
+
+        args = arguments or {}
+
+        resource_data = await email_provider.get_email_content(
+            mbox_path=args.get('mbox_path'),
+            message_offset=args.get('message_offset'),
+            message_id=args.get('message_id')
+        )
+
+        if resource_data.is_error:
+            return [
+                types.TextContent(
+                    type="text",
+                    text=f"Error: {resource_data.error}",
+                )
+            ]
+
+        return [
+            types.TextContent(
+                type="text",
+                text=serializer.to_json(resource_data),
+            )
+        ]
+
+    if name == "find_ical_emails":
+        if not email_provider.available:
+            return [
+                types.TextContent(
+                    type="text",
+                    text="Error: Evolution is not available or not configured",
+                )
+            ]
+
+        args = arguments or {}
+
+        resource_data = await email_provider.find_ical_emails(
+            account_name=args.get('account_name'),
+            folder_names=args.get('folder_names'),
+            days_back=args.get('days_back', 30),
+            limit=args.get('limit', 50)
+        )
+
+        if resource_data.is_error:
+            return [
+                types.TextContent(
+                    type="text",
+                    text=f"Error: {resource_data.error}",
+                )
+            ]
+
+        return [
+            types.TextContent(
+                type="text",
+                text=serializer.to_json(resource_data),
+            )
+        ]
+
+    # Handle Muninn memory tools
+    if name == "muninn_remember":
+        if not muninn_provider.available:
+            return [
+                types.TextContent(
+                    type="text",
+                    text="Error: Muninn memory system is not available",
+                )
+            ]
+
+        args = arguments or {}
+
+        resource_data = await muninn_provider.remember(
+            email_message_id=args.get('email_message_id'),
+            email_subject=args.get('email_subject'),
+            email_sender=args.get('email_sender'),
+            email_date=args.get('email_date'),
+            context=args.get('context'),
+            tags=args.get('tags'),
+            notes=args.get('notes')
+        )
+
+        if resource_data.is_error:
+            return [
+                types.TextContent(
+                    type="text",
+                    text=f"Error: {resource_data.error}",
+                )
+            ]
+
+        return [
+            types.TextContent(
+                type="text",
+                text=serializer.to_json(resource_data),
+            )
+        ]
+
+    if name == "muninn_recall":
+        if not muninn_provider.available:
+            return [
+                types.TextContent(
+                    type="text",
+                    text="Error: Muninn memory system is not available",
+                )
+            ]
+
+        args = arguments or {}
+
+        resource_data = await muninn_provider.recall(
+            email_message_id=args.get('email_message_id'),
+            limit=args.get('limit', 10)
+        )
+
+        if resource_data.is_error:
+            return [
+                types.TextContent(
+                    type="text",
+                    text=f"Error: {resource_data.error}",
+                )
+            ]
+
+        return [
+            types.TextContent(
+                type="text",
+                text=serializer.to_json(resource_data),
+            )
+        ]
+
+    if name == "muninn_search":
+        if not muninn_provider.available:
+            return [
+                types.TextContent(
+                    type="text",
+                    text="Error: Muninn memory system is not available",
+                )
+            ]
+
+        args = arguments or {}
+
+        resource_data = await muninn_provider.search_memories(
+            query=args.get('query'),
+            limit=args.get('limit', 10),
+            sender=args.get('sender'),
+            tags=args.get('tags')
+        )
+
+        if resource_data.is_error:
+            return [
+                types.TextContent(
+                    type="text",
+                    text=f"Error: {resource_data.error}",
+                )
+            ]
+
+        return [
+            types.TextContent(
+                type="text",
+                text=serializer.to_json(resource_data),
+            )
+        ]
+
+    if name == "muninn_update":
+        if not muninn_provider.available:
+            return [
+                types.TextContent(
+                    type="text",
+                    text="Error: Muninn memory system is not available",
+                )
+            ]
+
+        args = arguments or {}
+
+        resource_data = await muninn_provider.update_memory(
+            memory_id=args.get('memory_id'),
+            context=args.get('context'),
+            tags=args.get('tags'),
+            notes=args.get('notes')
+        )
+
+        if resource_data.is_error:
+            return [
+                types.TextContent(
+                    type="text",
+                    text=f"Error: {resource_data.error}",
+                )
+            ]
+
+        return [
+            types.TextContent(
+                type="text",
+                text=serializer.to_json(resource_data),
+            )
+        ]
+
+    if name == "muninn_forget":
+        if not muninn_provider.available:
+            return [
+                types.TextContent(
+                    type="text",
+                    text="Error: Muninn memory system is not available",
+                )
+            ]
+
+        args = arguments or {}
+
+        resource_data = await muninn_provider.forget_memory(
+            memory_id=args.get('memory_id')
+        )
+
+        if resource_data.is_error:
+            return [
+                types.TextContent(
+                    type="text",
+                    text=f"Error: {resource_data.error}",
+                )
+            ]
+
+        return [
+            types.TextContent(
+                type="text",
+                text=serializer.to_json(resource_data),
+            )
+        ]
+
+    if name == "muninn_stats":
+        if not muninn_provider.available:
+            return [
+                types.TextContent(
+                    type="text",
+                    text="Error: Muninn memory system is not available",
+                )
+            ]
+
+        resource_data = await muninn_provider.get_stats()
+
+        if resource_data.is_error:
+            return [
+                types.TextContent(
+                    type="text",
+                    text=f"Error: {resource_data.error}",
+                )
+            ]
+
+        return [
+            types.TextContent(
+                type="text",
+                text=serializer.to_json(resource_data),
+            )
+        ]
+
+    # Handle notification tools
+    if name == "send_notification":
+        args = arguments or {}
+        title = args.get('title', 'Notification')
+        body = args.get('body', '')
+        urgency_str = args.get('urgency', 'normal')
+        icon = args.get('icon', 'dialog-information')
+        category = args.get('category')
+
+        # Map urgency string to enum
+        urgency_map = {
+            'low': NotificationUrgency.LOW,
+            'normal': NotificationUrgency.NORMAL,
+            'critical': NotificationUrgency.CRITICAL,
+        }
+        urgency = urgency_map.get(urgency_str, NotificationUrgency.NORMAL)
+
+        result = notification_manager.send_notification(
+            title=title,
+            body=body,
+            urgency=urgency,
+            icon=icon,
+            category=category,
+        )
+
+        return [
+            types.TextContent(
+                type="text",
+                text=serializer.to_json({'content': result}),
+            )
+        ]
+
+    if name == "add_todo":
+        result = PlanifyManager.quick_add()
+
+        if result['success']:
+            return [
+                types.TextContent(
+                    type="text",
+                    text=serializer.to_json({'content': "Todo dialog opened. User will fill in the details."}),
+                )
+            ]
+        else:
+            return [
+                types.TextContent(
+                    type="text",
+                    text=serializer.to_json({'content': f"Error opening todo dialog: {result['error']}"}),
+                )
+            ]
+
+    if name == "compose_email":
+        args = arguments or {}
+        to = args.get('to', '')
+        subject = args.get('subject', '')
+        body = args.get('body', '')
+        cc = args.get('cc')
+        bcc = args.get('bcc')
+
+        result = compose_email(to=to, subject=subject, body=body, cc=cc, bcc=bcc)
+
+        if result['success']:
+            return [
+                types.TextContent(
+                    type="text",
+                    text=serializer.to_json({'content': f"Email composer opened with pre-filled content for {to}"}),
+                )
+            ]
+        else:
+            return [
+                types.TextContent(
+                    type="text",
+                    text=serializer.to_json({'content': f"Error opening email composer: {result['error']}"}),
+                )
+            ]
+
+    if name == "create_calendar_event":
+        args = arguments or {}
+        title = args.get('title', '')
+        start_time = args.get('start_time', '')
+        end_time = args.get('end_time', '')
+        description = args.get('description', '')
+        location = args.get('location', '')
+        all_day = args.get('all_day', False)
+        video_call_url = args.get('video_call_url')
+
+        result = create_calendar_event(
+            title=title,
+            start_time=start_time,
+            end_time=end_time,
+            description=description,
+            location=location,
+            all_day=all_day,
+            video_call_url=video_call_url
+        )
+
+        if result['success']:
+            return [
+                types.TextContent(
+                    type="text",
+                    text=serializer.to_json({'content': f"Calendar event '{title}' created and opened in GNOME Calendar"}),
+                )
+            ]
+        else:
+            return [
+                types.TextContent(
+                    type="text",
+                    text=serializer.to_json({'content': f"Error creating calendar event: {result['error']}"}),
+                )
+            ]
+
+    if name == "query_contacts":
+        if not CONTACTS_AVAILABLE or contacts_manager is None:
+            return [
+                types.TextContent(
+                    type="text",
+                    text=serializer.to_json({'content': 'Evolution contacts not available'}),
+                )
+            ]
+
+        args = arguments or {}
+        query = args.get('query')
+        email = args.get('email')
+        name_query = args.get('name')
+        limit = args.get('limit', 50)
+
+        try:
+            contacts = contacts_manager.search_contacts(
+                query=query,
+                email=email,
+                name=name_query,
+                limit=limit
+            )
+
+            return [
+                types.TextContent(
+                    type="text",
+                    text=serializer.to_json({
+                        'content': {
+                            'contacts': contacts,
+                            'count': len(contacts)
+                        }
+                    }),
+                )
+            ]
+        except Exception as e:
+            return [
+                types.TextContent(
+                    type="text",
+                    text=serializer.to_json({'content': f'Error querying contacts: {str(e)}'}),
+                )
+            ]
+
+    if name == "analyze_contact_communications":
+        if not COMM_ANALYSIS_AVAILABLE or communication_analyzer is None:
+            return [
+                types.TextContent(
+                    type="text",
+                    text=serializer.to_json({'content': 'Contact communication analyzer not available'}),
+                )
+            ]
+
+        args = arguments or {}
+        my_email_addresses = args.get('my_email_addresses', [])
+        days_back = args.get('days_back', 365)
+        recent_days = args.get('recent_days')
+
+        if not my_email_addresses:
+            return [
+                types.TextContent(
+                    type="text",
+                    text=serializer.to_json({'content': 'Error: my_email_addresses is required'}),
+                )
+            ]
+
+        try:
+            analysis = communication_analyzer.analyze_contact_emails(
+                my_email_addresses=my_email_addresses,
+                days_back=days_back,
+                recent_days=recent_days
+            )
+
+            return [
+                types.TextContent(
+                    type="text",
+                    text=serializer.to_json({'content': analysis}),
+                )
+            ]
+        except Exception as e:
+            import traceback
+            return [
+                types.TextContent(
+                    type="text",
+                    text=serializer.to_json({'content': f'Error analyzing communications: {str(e)}\n{traceback.format_exc()}'}),
+                )
+            ]
+
+    if name == "analyze_sent_emails":
+        if not SENT_EMAIL_ANALYSIS_AVAILABLE or sent_email_analyzer is None:
+            resource_data = ResourceData(content={'content': 'Sent email analyzer not available'})
+            return [
+                types.TextContent(
+                    type="text",
+                    text=serializer.to_json(resource_data),
+                )
+            ]
+
+        args = arguments or {}
+        my_email_addresses = args.get('my_email_addresses', [])
+        days_back = args.get('days_back', 365)
+        recent_days = args.get('recent_days')
+
+        if not my_email_addresses:
+            resource_data = ResourceData(content={'content': 'Error: my_email_addresses is required'})
+            return [
+                types.TextContent(
+                    type="text",
+                    text=serializer.to_json(resource_data),
+                )
+            ]
+
+        try:
+            analysis = sent_email_analyzer.analyze_sent_emails(
+                my_email_addresses=my_email_addresses,
+                days_back=days_back,
+                recent_days=recent_days
+            )
+
+            resource_data = ResourceData(content={'content': analysis})
+            return [
+                types.TextContent(
+                    type="text",
+                    text=serializer.to_json(resource_data),
+                )
+            ]
+        except Exception as e:
+            import traceback
+            resource_data = ResourceData(content={'content': f'Error analyzing sent emails: {str(e)}\n{traceback.format_exc()}'})
+            return [
+                types.TextContent(
+                    type="text",
+                    text=serializer.to_json(resource_data),
+                )
+            ]
+
+    if name == "send_urgent_notification":
+        args = arguments or {}
+        title = args.get('title', 'Urgent Notification')
+        body = args.get('body', '')
+
+        result = notification_manager.send_urgent_notification(
+            title=title,
+            body=body,
+        )
+
+        return [
+            types.TextContent(
+                type="text",
+                text=serializer.to_json({'content': result}),
             )
         ]
 

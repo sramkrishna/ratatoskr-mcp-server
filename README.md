@@ -10,6 +10,11 @@ MCP Server for GNOME integration, providing comprehensive desktop management, AI
 - **Favorite Apps**: Access and manage pinned applications in the GNOME dash
 - **Keybindings**: Query all GNOME keyboard shortcuts and keybindings
 - **App Launch Tracking**: Monitor and analyze application usage patterns
+- **Email Composition**: Open Evolution email composer with pre-filled content (to, subject, body, cc, bcc)
+- **Calendar Management**:
+  - Query calendar events from all sources (local, Google Calendar, Microsoft 365, Nextcloud)
+  - Create calendar events with optional video call links (Google Meet, Zoom, Jitsi, Teams, etc.)
+- **Task Management** (Optional): Access and create Planify tasks (auto-detected if Planify is installed)
 - **Distribution Information**: Access OS distribution details
 
 ### AI-Powered Features
@@ -115,12 +120,17 @@ Edit `~/.config/Claude/claude_desktop_config.json`:
       "command": "python",
       "args": ["/path/to/ratatoskr-mcp-server/src/ratatoskr_mcp_server/server.py"],
       "env": {
-        "PYTHONPATH": "/path/to/ratatoskr-mcp-server/src"
+        "PYTHONPATH": "/path/to/ratatoskr-mcp-server/src",
+        "DEFAULT_VIDEO_CALL_URL": "https://meet.google.com/your-meeting-code"
       }
     }
   }
 }
 ```
+
+**Optional Environment Variables:**
+- `DEFAULT_VIDEO_CALL_URL`: Your default video conferencing URL (Google Meet, Zoom, Jitsi, Teams, etc.). The LLM can use this when you request an online meeting. Example: `https://meet.google.com/abc-defg-hij`
+  - Note: This is NOT automatically added to every event - only used when you explicitly request an online/virtual meeting
 
 #### Generic MCP Client Configuration
 
@@ -152,6 +162,8 @@ All resources are read-only and provide JSON data:
 - `ratatoskr://gnome/app-stats` - Application launch statistics and usage patterns
 - `ratatoskr://tracker/project-files` - Recent file activity in project directories
 - `ratatoskr://tracker/file-stats` - System-wide file statistics and storage analysis
+- `ratatoskr://calendar/events` - Upcoming calendar events from all configured calendars
+- `ratatoskr://planify/tasks` - Planify tasks and to-dos (if Planify is installed)
 - `ratatoskr://distro/osinfo` - Distribution information
 
 ## Available Tools
@@ -163,6 +175,9 @@ All resources are read-only and provide JSON data:
 - `get_favorite_apps` - Get pinned applications
 - `get_keybindings` - Get all keyboard shortcuts
 - `get_app_launch_stats` - Get application usage statistics
+- `query_calendar_events` - Query calendar events with natural language dates ('yesterday', 'today', 'tomorrow')
+- `query_planify_tasks` - Query Planify tasks with filters (completion, project, priority, due date) [if Planify installed]
+- `get_planify_projects` - Get all Planify projects [if Planify installed]
 
 ### File Discovery & Analysis
 - `get_project_files` - Get recent file activity in project directories
@@ -257,6 +272,79 @@ analyze_images_batch(
 )
 ```
 
+### Calendar Workflow
+
+```python
+# Query today's events
+query_calendar_events(start_date="today")
+
+# Query yesterday's events
+query_calendar_events(start_date="yesterday")
+
+# Query tomorrow's events
+query_calendar_events(start_date="tomorrow")
+
+# Query specific date range (next week)
+query_calendar_events(
+    start_date="2025-11-01",
+    days_ahead=7
+)
+
+# Query events from specific calendars
+query_calendar_events(
+    start_date="today",
+    days_ahead=30,
+    calendar_uids=["1b983db2c89d7ca97886603063144868b787709b"]  # Google Calendar UID
+)
+```
+
+**Supported Calendar Sources:**
+- Local GNOME Calendar (ICS files at `~/.local/share/evolution/calendar/system/calendar.ics`)
+- Google Calendar (via Evolution Data Server)
+- Microsoft 365 Calendar
+- Nextcloud Calendar
+- Any CalDAV calendar configured in GNOME Calendar
+
+**Natural Language Date Support:**
+- `yesterday` - Events from yesterday
+- `today` - Events from today
+- `tomorrow` - Events for tomorrow
+- ISO dates - `YYYY-MM-DD` format for specific dates
+
+### Task Management Workflow (Planify)
+
+**Note**: Planify integration is automatically enabled if Planify is installed as a Flatpak. The server detects the presence of Planify on startup.
+
+```python
+# Get all projects
+get_planify_projects()
+
+# Query all incomplete tasks
+query_planify_tasks(completed=False)
+
+# Query high-priority tasks
+query_planify_tasks(priority=4, completed=False)  # 4 = urgent
+
+# Query tasks with due dates
+query_planify_tasks(has_due_date=True, completed=False)
+
+# Query tasks from a specific project
+query_planify_tasks(
+    project_id="abc123",
+    completed=False,
+    limit=20
+)
+```
+
+**Priority Levels:**
+- `1` - Low priority
+- `2` - Medium priority
+- `3` - High priority
+- `4` - Urgent
+
+**Data Location:**
+- Planify database: `~/.var/app/io.github.alainm23.planify/data/io.github.alainm23.planify/database.db`
+
 ### File Management Workflow
 
 ```python
@@ -308,7 +396,9 @@ src/ratatoskr_mcp_server/
 │   ├── file_search.py       # File search provider
 │   ├── document_content.py  # Document extraction provider
 │   ├── image_analyzer.py    # Image analysis with LLaVA
-│   └── face_manager.py      # Face recognition provider
+│   ├── face_manager.py      # Face recognition provider
+│   ├── calendar.py          # Calendar events provider
+│   └── planify.py           # Planify task manager provider
 ├── monitors/                 # Background monitors
 │   ├── app_launch.py        # GNOME usage tracking
 │   ├── dbus_launch_monitor.py    # Native app monitoring
@@ -319,6 +409,8 @@ src/ratatoskr_mcp_server/
     ├── app_launch_db.py     # App launch database
     ├── file_operations.py   # Safe file operations
     ├── face_database.py     # Face recognition database
+    ├── calendar.py          # Calendar access utilities
+    ├── planify.py           # Planify database access utilities
     └── llamafile.py         # LLaVA vision model interface
 ```
 

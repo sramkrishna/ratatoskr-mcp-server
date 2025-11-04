@@ -347,3 +347,159 @@ elif name == "get_cpu_info":
 ```
 
 Done! The LLM can now call `get_cpu_info`.
+
+---
+
+## Email & Memory Systems (Evolution + Muninn)
+
+### Email Architecture (EvolutionEmailManager)
+
+**Evolution Choice:** Evolution stores emails in SQLite databases with built-in indexes, enabling instant queries across 190,000+ emails without sequential scanning.
+
+**Architecture:**
+```
+EmailProvider (email.py)
+    ↓
+EvolutionEmailManager (utils/evolution_email.py)
+    ↓
+SQLite Databases (~/.var/app/org.gnome.Evolution/cache/evolution/mail/)
+    ├── Account 1/folders.db
+    ├── Account 2/folders.db
+    └── Account 3/folders.db
+        ├── folders table (folder_name, saved_count, unread_count)
+        └── messages_N tables (uid, subject, mail_from, mail_to, dsent, size, flags)
+```
+
+**Database Schema:**
+Evolution uses multiple `messages_N` tables (messages_1 through messages_28) in each account's `folders.db`. Key fields:
+- `uid` - Unique message identifier
+- `subject` - Email subject line
+- `mail_from` - Sender email
+- `mail_to` - Recipients
+- `mail_cc` - CC recipients
+- `dsent` - Send date (Unix timestamp, indexed!)
+- `size` - Email size in bytes
+- `flags` - Message flags
+
+**Query Performance:**
+```python
+# Find emails from specific sender in last 2 weeks
+SELECT * FROM messages_3
+WHERE mail_from LIKE '%nikshi%'
+  AND dsent >= 1730419200
+ORDER BY dsent DESC
+LIMIT 3;
+```
+
+**Performance Characteristics:**
+- ✅ **First query**: ~350ms (includes connection overhead)
+- ✅ **Subsequent queries**: ~20ms (instant!)
+- ✅ **Search across 190,000+ emails**: No performance degradation
+- ✅ **Date range filtering**: Instant via indexed `dsent` column
+- ✅ **No timeouts**: SQLite queries complete in milliseconds
+
+**Design Benefits:**
+1. **No Sequential Scanning** - Indexed queries jump directly to relevant emails
+2. **Multiple Account Support** - Each account has separate database
+3. **Built-in Indexing** - Evolution maintains indexes automatically
+4. **Concurrent Access** - Multiple queries can run without blocking
+
+**Tools Provided:**
+- `query_emails` - Fast search with filters (sender, recipient, subject, date)
+- `get_email_accounts` - List configured Evolution accounts
+- `get_email_folders` - List folders per account
+- `get_email_content` - Fetch full email body (Note: requires mbox access for full content)
+- `find_ical_emails` - Find meeting invitations
+
+---
+
+### Memory System (Muninn)
+
+**Purpose:** Store conversational context about emails for semantic recall
+
+**Architecture:**
+```
+EmailProvider ──┐
+                ├──> MuninnProvider ──> ChromaDB (Vector Store)
+UserQuery  ─────┘                       └─> Embeddings (MiniLM-L6-v2)
+```
+
+**Why ChromaDB?**
+- Local-first (no cloud dependency)
+- Built-in embedding generation
+- Semantic search out-of-box
+- Small footprint (~80MB model)
+
+**Data Schema:**
+```python
+{
+    'id': 'email_<msg-id>_<timestamp>',
+    'email_message_id': '<original@msg.id>',
+    'email_subject': 'Meeting about X',
+    'email_sender': 'person@example.com',
+    'email_date': '2025-08-29T12:00:00',
+    'context': 'Full discussion summary...',  # Embedded for semantic search
+    'tags': ['work', 'urgent', 'follow-up'],
+    'notes': 'Additional notes...'
+}
+```
+
+**Query Patterns:**
+
+1. **Exact Recall** (by Message-ID)
+   ```python
+   muninn_recall(email_message_id="<123@gmail.com>")
+   # → Returns all memories for this specific email
+   ```
+
+2. **Semantic Search** (by meaning)
+   ```python
+   muninn_search(query="discussions about the Filigran opportunity")
+   # → Returns relevant memories ranked by similarity
+   # Uses ChromaDB's cosine similarity on embeddings
+   ```
+
+3. **Filtered Search** (by tags/sender)
+   ```python
+   muninn_search(
+       query="meeting preparations",
+       tags=["work", "urgent"],
+       sender="boss@company.com"
+   )
+   ```
+
+**Performance:**
+- Memory storage: <100ms (embedding + insert)
+- Semantic search: <500ms (even with 1000s of memories)
+- Storage: ~/.local/share/ratatoskr/muninn
+
+**Tools Provided:**
+- `muninn_remember` - Store context about email discussions
+- `muninn_recall` - Retrieve by email Message-ID
+- `muninn_search` - Semantic search across all memories
+- `muninn_update` - Update existing memory
+- `muninn_forget` - Delete memory
+- `muninn_stats` - Get statistics
+
+**Use Cases:**
+1. "What did I discuss with John about the project?"
+2. "Show me all work-related urgent follow-ups"
+3. "What decisions were made in the Filigran emails?"
+4. "Find discussions about meeting scheduling"
+
+---
+
+## Performance Best Practices
+
+### Email Queries
+1. ✅ **Always specify narrow time ranges** (days_back=30 or less)
+2. ✅ **Use sender/recipient filters** to reduce result sets
+3. ✅ **Query metadata first**, fetch content only if needed
+4. ❌ **Avoid:** No filters on large mailboxes
+5. ❌ **Avoid:** Searching all folders without limit
+
+### Memory Usage
+1. ✅ **Store summaries**, not full email content
+2. ✅ **Use tags** for efficient categorical filtering
+3. ✅ **Semantic search** for fuzzy/contextual queries
+4. ✅ **Update memories** rather than duplicating
