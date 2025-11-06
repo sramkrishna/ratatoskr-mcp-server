@@ -686,7 +686,7 @@ async def handle_list_tools() -> list[types.Tool]:
             ),
             types.Tool(
                 name="query_emails",
-                description="Query emails from Evolution. FAST: Uses SQLite indexes for instant searches across 190,000+ emails. Searches last 7 days by default. Supports filtering by sender, recipient, subject, date. No timeout needed - queries are <1ms!",
+                description="Query emails from Evolution. FAST: Uses SQLite indexes for instant searches across 190,000+ emails. Searches last 7 days by default. Supports filtering by sender, recipient, subject, date. No timeout needed - queries are <1ms! NOTE: Queries email metadata (subject, sender, date) from SQLite database. Evolution should be running for best results - it caches email bodies when accessing IMAP accounts.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -729,20 +729,24 @@ async def handle_list_tools() -> list[types.Tool]:
             ),
             types.Tool(
                 name="get_email_content",
-                description="Get full content of a specific email including body and attachments. Use this after query_emails to get the full email content.",
+                description="Get full content of a specific email including body text/HTML. Use this after query_emails to read email bodies. IMPORTANT: Evolution only caches email bodies for IMAP accounts when you access them. If email body is not cached, you'll get an error asking to open the email in Evolution first. For best results, ensure Evolution is running.",
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "mbox_path": {
+                        "account_id": {
                             "type": "string",
-                            "description": "Path to mbox file (from query_emails result).",
+                            "description": "Account ID from query_emails result.",
                         },
-                        "message_offset": {
+                        "folder": {
                             "type": "string",
-                            "description": "Hex offset of message in mbox file (msgOffset from query_emails result).",
+                            "description": "Folder name from query_emails result (e.g., 'INBOX').",
+                        },
+                        "uid": {
+                            "type": "string",
+                            "description": "Email UID from query_emails result.",
                         },
                     },
-                    "required": ["mbox_path"],
+                    "required": ["account_id", "folder", "uid"],
                 },
             ),
             types.Tool(
@@ -1035,7 +1039,7 @@ async def handle_list_tools() -> list[types.Tool]:
                     },
                     "video_call_url": {
                         "type": "string",
-                        "description": "Optional video conferencing URL to add to the event (e.g., Google Meet, Zoom, Jitsi, Teams). Only include this parameter when the user explicitly requests an online/virtual meeting. The link will be added to the event description and as a conference property.",
+                        "description": "Video conferencing URL for the event (Zoom, Google Meet, Jitsi, Teams, etc.). IMPORTANT: When creating events with video calls, ALWAYS use this parameter - it will automatically populate the location field with a clickable link. Do NOT put URLs in the location parameter manually. If the event has a video call link (from email, user request, etc.), extract it and pass it here.",
                     },
                 },
                 "required": ["title", "start_time", "end_time"],
@@ -1453,9 +1457,9 @@ async def handle_call_tool(
         args = arguments or {}
 
         resource_data = await email_provider.get_email_content(
-            mbox_path=args.get('mbox_path'),
-            message_offset=args.get('message_offset'),
-            message_id=args.get('message_id')
+            account_id=args.get('account_id'),
+            folder=args.get('folder'),
+            uid=args.get('uid')
         )
 
         if resource_data.is_error:

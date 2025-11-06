@@ -107,11 +107,24 @@ def create_calendar_event(
             dtstart = f"DTSTART;VALUE=DATE:{start_dt.strftime('%Y%m%d')}"
             dtend = f"DTEND;VALUE=DATE:{end_dt.strftime('%Y%m%d')}"
         else:
-            # Regular events use DATETIME format (YYYYMMDDTHHMMSSZ)
+            # Regular events use DATETIME format (YYYYMMDDTHHMMSSZ in UTC)
+            # Parse the datetime with timezone info
             start_dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
             end_dt = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
-            dtstart = f"DTSTART:{start_dt.strftime('%Y%m%dT%H%M%S')}Z"
-            dtend = f"DTEND:{end_dt.strftime('%Y%m%dT%H%M%S')}Z"
+
+            # Convert to UTC before formatting with Z suffix (which means UTC)
+            from datetime import timezone
+            # If naive (no timezone), assume local time
+            if start_dt.tzinfo is None:
+                start_dt = start_dt.astimezone()  # Adds local timezone
+            if end_dt.tzinfo is None:
+                end_dt = end_dt.astimezone()  # Adds local timezone
+
+            start_utc = start_dt.astimezone(timezone.utc)
+            end_utc = end_dt.astimezone(timezone.utc)
+
+            dtstart = f"DTSTART:{start_utc.strftime('%Y%m%dT%H%M%S')}Z"
+            dtend = f"DTEND:{end_utc.strftime('%Y%m%dT%H%M%S')}Z"
 
         # Generate unique ID
         uid = f"{start_dt.strftime('%Y%m%d%H%M%S')}-{hash(title) % 10000}@ratatoskr"
@@ -129,14 +142,14 @@ def create_calendar_event(
             f"SUMMARY:{title}",
         ]
 
-        # Add video call URL if specified
+        # Handle video call URL - put it in location field for better calendar integration
         if video_call_url:
-            # Add video call link to description
-            video_note = f"\\n\\nVideo call: {video_call_url}"
+            # Use video URL as location (Zoom, Google Meet, etc.)
+            location = video_call_url
+            # Also add to description if there's already a description
             if description:
+                video_note = f"\\n\\nVideo call: {video_call_url}"
                 description += video_note
-            else:
-                description = f"Virtual meeting{video_note}"
 
         if description:
             # Escape special characters and handle line folding for long descriptions

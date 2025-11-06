@@ -1,6 +1,7 @@
 """Evolution email utilities for fast SQLite-based email search."""
 
 import sqlite3
+import email
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Optional
@@ -231,10 +232,12 @@ class EvolutionEmailManager:
             try:
                 rows = conn.execute(query, params).fetchall()
 
+                folder_to_use = folder_name or 'INBOX'
+
                 for row in rows:
                     email_dict = dict(row)
                     email_dict['account_id'] = acc_id
-                    email_dict['folder'] = folder_name or 'INBOX'
+                    email_dict['folder'] = folder_to_use
                     results.append(email_dict)
 
                     if len(results) >= limit:
@@ -279,3 +282,91 @@ class EvolutionEmailManager:
             return dict(row)
 
         return None
+
+    def read_email_from_maildir(self, account_id: str, folder_name: str, uid: str) -> Optional[Dict]:
+        """Read email content from Evolution Maildir storage.
+
+        Args:
+            account_id: Evolution account ID (hash)
+            folder_name: Folder name (e.g., 'INBOX')
+            uid: Message UID from database
+
+        Returns:
+            Dictionary with email content including subject, from, to, date, body
+            Returns None if email body is not cached locally
+        """
+        # Evolution stores emails in Maildir format: folders/{folder}/cur/{subdir}/{uid}
+        folder_path = self.mail_path / account_id / 'folders' / folder_name / 'cur'
+
+        if not folder_path.exists():
+            return None
+
+        try:
+            # Find the message file by UID (it's in a subdirectory, so we need to search)
+            message_file = None
+            for subdir in folder_path.iterdir():
+                if subdir.is_dir():
+                    potential_file = subdir / uid
+                    if potential_file.exists():
+                        message_file = potential_file
+                        break
+
+            if not message_file:
+                # Email body not cached locally (IMAP online-only mode)
+                return {
+                    'error': 'not_cached',
+                    'message': 'Email body not cached locally. Evolution IMAP accounts only cache recently accessed emails. Open this email in Evolution to download its content.'
+                }
+
+            # Read and parse the email
+            with open(message_file, 'rb') as f:
+                msg = email.message_from_binary_file(f)
+
+            # Extract email parts
+            result = {
+                'subject': msg.get('Subject', ''),
+                'from': msg.get('From', ''),
+                'to': msg.get('To', ''),
+                'cc': msg.get('Cc', ''),
+                'date': msg.get('Date', ''),
+                'message_id': msg.get('Message-ID', ''),
+            }
+
+            # Extract body (text and HTML)
+            body_text = []
+            body_html = []
+
+            if msg.is_multipart():
+                for part in msg.walk():
+                    content_type = part.get_content_type()
+                    if content_type == 'text/plain':
+                        try:
+                            body_text.append(part.get_payload(decode=True).decode('utf-8', errors='replace'))
+                        except:
+                            pass
+                    elif content_type == 'text/html':
+                        try:
+                            body_html.append(part.get_payload(decode=True).decode('utf-8', errors='replace'))
+                        except:
+                            pass
+            else:
+                content_type = msg.get_content_type()
+                try:
+                    payload = msg.get_payload(decode=True)
+                    if payload:
+                        text = payload.decode('utf-8', errors='replace')
+                        if content_type == 'text/html':
+                            body_html.append(text)
+                        else:
+                            body_text.append(text)
+                except:
+                    pass
+
+            result['body_text'] = '\n\n'.join(body_text) if body_text else ''
+            result['body_html'] = '\n\n'.join(body_html) if body_html else ''
+
+            return result
+
+        except Exception as e:
+            # Return None on any error
+            return None

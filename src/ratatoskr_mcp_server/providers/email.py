@@ -150,17 +150,17 @@ class EmailProvider:
 
     async def get_email_content(
         self,
-        mbox_path: str,
-        message_offset: Optional[str] = None,
-        message_id: Optional[str] = None
+        account_id: str,
+        folder: str,
+        uid: str
     ) -> ResourceData:
         """
         Get full content of a specific email.
 
         Args:
-            mbox_path: Path to the mbox file
-            message_offset: Hex offset of message in mbox file (from query results)
-            message_id: Message-ID to search for
+            account_id: Evolution account ID
+            folder: Folder name (e.g., 'INBOX')
+            uid: Message UID from query results
 
         Returns:
             ResourceData with full email content
@@ -172,18 +172,14 @@ class EmailProvider:
             )
 
         try:
-            offset_int = None
-            if message_offset:
-                offset_int = int(message_offset, 16)
-
             # Run in thread pool with timeout (30 seconds for single email)
             try:
                 email_content = await asyncio.wait_for(
                     asyncio.to_thread(
-                        self.email_mgr.get_email_content,
-                        mbox_path=mbox_path,
-                        message_offset=offset_int,
-                        message_id=message_id
+                        self.email_mgr.read_email_from_maildir,
+                        account_id=account_id,
+                        folder_name=folder,
+                        uid=uid
                     ),
                     timeout=30
                 )
