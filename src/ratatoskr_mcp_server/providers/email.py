@@ -90,15 +90,15 @@ class EmailProvider:
         limit: int = 100
     ) -> ResourceData:
         """
-        Query emails from Thunderbird.
+        Query emails from Evolution.
 
         Args:
-            account_name: Email account name (e.g., 'imap.gmail.com'). If None, searches all accounts.
-            folder_names: List of folder names to query (e.g., ['INBOX', 'Sent Mail'])
+            account_name: Email account ID hash. If None, searches all accounts.
+            folder_names: DEPRECATED - Evolution stores all emails in one table. Use sender/recipient to filter.
             days_back: Number of days to look back (default: 7)
             has_attachments: Only return emails with attachments
-            sender: Filter by sender email address
-            recipient: Filter by recipient email address
+            sender: Filter by sender email address (use this for sent mail queries)
+            recipient: Filter by recipient email address (use this for received mail queries)
             subject_contains: Filter by subject text
             limit: Maximum number of emails to return (default: 100)
 
@@ -115,11 +115,21 @@ class EmailProvider:
             end_date = datetime.now()
             start_date = end_date - timedelta(days=days_back)
 
+            # Get account email addresses for labeling sent vs received
+            if account_name:
+                # Get this specific account's email
+                accounts = [acc for acc in self.email_mgr.get_accounts() if acc['account_id'] == account_name]
+                user_emails = [acc['email_address'].lower() for acc in accounts]
+            else:
+                # Get all account emails
+                user_emails = [acc['email_address'].lower() for acc in self.email_mgr.get_accounts()]
+
             # Query Evolution - no timeout needed, it's instant!
+            # Note: folder_name parameter is deprecated but kept for backward compatibility
             emails = await asyncio.to_thread(
                 self.email_mgr.query_emails,
                 account_id=account_name,
-                folder_name=folder_names[0] if folder_names else None,
+                folder_name=None,  # Not used - Evolution has no folder column
                 sender=sender,
                 recipient=recipient,
                 subject=subject_contains,
@@ -128,13 +138,24 @@ class EmailProvider:
                 limit=limit
             )
 
+            # Post-process: properly label sent vs received based on sender
+            for email in emails:
+                email_sender = (email.get('sender') or '').lower()
+                # If sender matches user's email addresses, it's sent mail
+                if any(user_email in email_sender for user_email in user_emails):
+                    email['folder'] = 'Sent'
+                else:
+                    email['folder'] = 'INBOX'
+
             return ResourceData(
                 content={
                     'query': {
                         'account': account_name,
-                        'folders': folder_names,
                         'start_date': start_date.isoformat(),
                         'end_date': end_date.isoformat(),
+                        'sender': sender,
+                        'recipient': recipient,
+                        'subject_contains': subject_contains,
                         'has_attachments': has_attachments,
                         'limit': limit
                     },

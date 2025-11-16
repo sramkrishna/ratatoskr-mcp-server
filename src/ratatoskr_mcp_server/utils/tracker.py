@@ -6,8 +6,18 @@ from typing import List, Dict, Any, Optional
 from pathlib import Path
 from datetime import datetime, timedelta
 import os
+import sys
+import tempfile
 
 from ratatoskr_mcp_server.utils.gsettings import _build_command
+
+# Optional OCR support
+try:
+    from pdf2image import convert_from_path
+    import pytesseract
+    OCR_AVAILABLE = True
+except ImportError:
+    OCR_AVAILABLE = False
 
 
 def query_sparql(sparql: str) -> List[Dict[str, Any]]:
@@ -867,6 +877,74 @@ def search_files(
         return []
 
 
+def _ocr_pdf(pdf_path: str, max_pages: int = 20) -> Optional[str]:
+    """
+    Extract text from a PDF using OCR (Tesseract).
+
+    This is a fallback for image-based/scanned PDFs where LocalSearch
+    returns empty content because there's no text layer.
+
+    Args:
+        pdf_path: Absolute path to the PDF file
+        max_pages: Maximum number of pages to process (default: 20)
+
+    Returns:
+        Extracted text content, or None if OCR failed
+    """
+    if not OCR_AVAILABLE:
+        return None
+
+    try:
+        # Convert PDF pages to images
+        # Use temp directory to avoid permission issues
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Convert PDF to images (limit to first N pages for performance)
+            images = convert_from_path(
+                pdf_path,
+                first_page=1,
+                last_page=max_pages,
+                dpi=200,  # Good balance of quality vs speed
+                output_folder=temp_dir,
+                fmt='png'
+            )
+
+            # Run OCR on each page
+            text_parts = []
+            for i, image in enumerate(images, 1):
+                # Run tesseract via command
+                # Save image to temp file first
+                img_path = os.path.join(temp_dir, f'page_{i}.png')
+                image.save(img_path)
+
+                # Run tesseract directly - don't use _build_command because:
+                # 1. Temp files are in container, not accessible from host
+                # 2. If we're in toolbox, tesseract is already installed here
+                cmd = ['tesseract', img_path, 'stdout', '-l', 'eng']
+
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=10  # 10 seconds per page
+                )
+
+                if result.returncode == 0 and result.stdout.strip():
+                    text_parts.append(f"=== Page {i} ===\n{result.stdout.strip()}")
+
+            # Combine all pages
+            if text_parts:
+                return '\n\n'.join(text_parts)
+
+            return None
+
+    except Exception as e:
+        # OCR failed, print error for debugging
+        print(f"DEBUG: OCR Exception: {type(e).__name__}: {str(e)}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        return None
+
+
 def extract_file_content(file_path: str) -> Dict[str, Any]:
     """
     Extract content and metadata from a file using LocalSearch extractors.
@@ -962,6 +1040,20 @@ def extract_file_content(file_path: str) -> Dict[str, Any]:
             metadata['creator'] = file_data['dc:creator']
         if 'nie:title' in file_data:
             metadata['nie_title'] = file_data['nie:title']
+
+        # OCR fallback for image-based PDFs
+        # If LocalSearch returned no content and this is a PDF, try OCR
+        if not content and abs_path.lower().endswith('.pdf'):
+            ocr_content = _ocr_pdf(abs_path)
+            if ocr_content:
+                content = ocr_content
+                metadata['extraction_method'] = 'ocr_fallback'
+                metadata['ocr_note'] = 'Text extracted via Tesseract OCR (image-based PDF)'
+            else:
+                metadata['extraction_method'] = 'localsearch_only'
+                metadata['ocr_note'] = 'OCR unavailable or failed'
+        else:
+            metadata['extraction_method'] = 'localsearch'
 
         # Calculate content stats if text content is available
         content_stats = {}

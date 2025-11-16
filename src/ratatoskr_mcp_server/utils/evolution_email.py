@@ -232,12 +232,11 @@ class EvolutionEmailManager:
             try:
                 rows = conn.execute(query, params).fetchall()
 
-                folder_to_use = folder_name or 'INBOX'
-
                 for row in rows:
                     email_dict = dict(row)
                     email_dict['account_id'] = acc_id
-                    email_dict['folder'] = folder_to_use
+                    # Folder labeling is now handled by the email provider
+                    email_dict['folder'] = folder_name or 'Unknown'
                     results.append(email_dict)
 
                     if len(results) >= limit:

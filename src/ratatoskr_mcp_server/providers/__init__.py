@@ -14,6 +14,7 @@ from .file_search import FileSearchProvider
 from .document_content import DocumentContentProvider
 from .image_analyzer import ImageAnalyzerProvider
 # from .face_manager import FaceManagerProvider  # Disabled - requires face_recognition
+from .network_detection import NetworkDetectionProvider
 from .calendar import CalendarProvider
 from .planify import PlanifyProvider
 from .email import EmailProvider
@@ -34,6 +35,7 @@ __all__ = [
     "DocumentContentProvider",
     "ImageAnalyzerProvider",
     # "FaceManagerProvider",  # Disabled - requires face_recognition
+    "NetworkDetectionProvider",
     "CalendarProvider",
     "PlanifyProvider",
     "EmailProvider",

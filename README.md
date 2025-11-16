@@ -40,10 +40,28 @@ All AI features run completely on-device:
 - Python 3.9 - 3.13 (Python 3.14+ not yet supported due to pydantic-core compatibility)
 - GNOME desktop environment (for GNOME-specific features)
 - D-Bus session bus
+- **For PDF OCR**: poppler-utils and tesseract (for extracting text from scanned PDFs)
 - **For Image Analysis**: Podman (container runtime for LLaVA model)
 - **For Face Recognition**: dlib build dependencies (cmake, gcc, g++)
 
 ## Installation
+
+### System Dependencies
+
+**For PDF OCR (Required for scanning image-based PDFs):**
+
+```bash
+# Fedora/RHEL
+sudo dnf install -y poppler-utils tesseract
+
+# Ubuntu/Debian
+sudo apt install -y poppler-utils tesseract-ocr
+
+# Arch Linux
+sudo pacman -S poppler tesseract
+```
+
+Without these, PDF text extraction from scanned/image-based PDFs will fail.
 
 ### Basic Installation
 

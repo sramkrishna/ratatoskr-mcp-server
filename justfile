@@ -1,8 +1,8 @@
 # Ratatoskr MCP Server - justfile
 # GNOME Desktop integration (email, calendar, contacts, notifications)
 
-# Python to use (prefer 3.13+, fallback to system Python 3.14)
-python := `which python3.13 || which python3.14 || which python3`
+# Python to use (requires Python 3.13)
+python := "python3.13"
 
 # Default recipe
 default:

@@ -23,6 +23,7 @@ from ratatoskr_mcp_server.providers import (
     FileSearchProvider,
     DocumentContentProvider,
     ImageAnalyzerProvider,
+    NetworkDetectionProvider,
     # FaceManagerProvider,  # Disabled - requires face_recognition
     CalendarProvider,
     PlanifyProvider,
@@ -77,6 +78,7 @@ resources = {
     "ratatoskr://tracker/project-files": ProjectFilesProvider(),
     "ratatoskr://tracker/file-stats": FileStatisticsProvider(),
     "ratatoskr://distro/osinfo": DistroInfoProvider(),
+    "ratatoskr://system/network": NetworkDetectionProvider(),
     "ratatoskr://calendar/events": CalendarProvider(),
 }
 
@@ -207,6 +209,12 @@ async def handle_list_resources() -> list[types.Resource]:
             mimeType="application/json",
         ),
         types.Resource(
+            uri="ratatoskr://system/network",
+            name="Network Detection & Backend Selection",
+            description="Detect current network environment (WiFi SSID, subnet), determine if on home network, check available vision backends (Ollama/GPU, OpenVINO/NPU, llamafile/CPU), and recommend optimal backend for current location",
+            mimeType="application/json",
+        ),
+        types.Resource(
             uri="ratatoskr://calendar/events",
             name="Calendar Events",
             description="Upcoming calendar events from all configured calendars (local and online)",
@@ -316,6 +324,72 @@ async def handle_list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
+            name="detect_network",
+            description="Detect current network environment and get recommended vision backend. Returns: network info (WiFi SSID, subnet, home network status), available backends (Ollama/GPU, OpenVINO/NPU, llamafile/CPU), and recommended backend for current location. Use this to understand which backend will be used for vision tasks or to help debug backend selection issues.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        ),
+        types.Tool(
+            name="scan_wifi_networks",
+            description="Scan for available WiFi networks and show signal strength, security, and frequency. SUPER USEFUL when you're in a place with many SSIDs (coffee shop, airport, hotel, conference) and need to find the right network. Shows signal strength (so you can pick the strongest), security type (WPA2, WPA, Open), and band (2.4 GHz vs 5 GHz). Can filter by name pattern and minimum signal strength.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "rescan": {
+                        "type": "boolean",
+                        "description": "Whether to trigger a new scan before listing networks (default: true). Set to false to just show cached results.",
+                    },
+                    "filter_pattern": {
+                        "type": "string",
+                        "description": "Optional pattern to filter SSIDs (case-insensitive). E.g., 'hotel' to find hotel networks, 'guest' for guest networks.",
+                    },
+                    "min_signal_strength": {
+                        "type": "number",
+                        "description": "Minimum signal strength (0-100, default: 0). E.g., 50 to only show networks with decent signal.",
+                    },
+                },
+                "required": [],
+            },
+        ),
+        types.Tool(
+            name="convert_markdown_to_pdf",
+            description="Convert markdown file(s) to PDF using pandoc. Perfect for emailing markdown documents - PDFs render properly in all webmail clients (Gmail, Outlook, etc.) and on all platforms (Windows, macOS, Linux). Supports metadata (title, author) and handles single or multiple files. Requires pandoc to be installed.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "markdown_path": {
+                        "type": "string",
+                        "description": "Path to markdown file to convert (for single file conversion)",
+                    },
+                    "markdown_paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of markdown file paths to convert (for batch conversion)",
+                    },
+                    "output_path": {
+                        "type": "string",
+                        "description": "Optional output PDF path (for single file). Defaults to same directory/name as markdown with .pdf extension.",
+                    },
+                    "output_dir": {
+                        "type": "string",
+                        "description": "Optional output directory for batch conversion. Defaults to same directory as each markdown file.",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Optional document title for PDF metadata",
+                    },
+                    "author": {
+                        "type": "string",
+                        "description": "Optional author name for PDF metadata",
+                    },
+                },
+                "required": [],
+            },
+        ),
+        types.Tool(
             name="search_files",
             description="Search for files by type, location, size, and modification date using TinySPARQL. Useful for finding files to organize or clean up.",
             inputSchema={
@@ -369,7 +443,7 @@ async def handle_list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="analyze_image",
-            description="Analyze an image using a local vision LLM to generate a detailed description. The description is written to the image's EXIF/XMP metadata and indexed by LocalSearch, making it searchable. Uses on-device AI for privacy. Requires: container built (./scripts/build-llamafile-container.sh) and model downloaded (./scripts/download-vision-model.sh).",
+            description="Analyze an image using multi-backend vision system (automatically selects best backend based on network). Auto-selection: At home → Ollama (GPU, fastest ~50-150 tok/s), Traveling → OpenVINO (NPU ~20-50 tok/s), Fallback → llamafile (CPU ~2-5 tok/s). The description is written to the image's EXIF/XMP metadata and indexed by LocalSearch, making it searchable. Uses on-device AI for privacy. Set 'backend' parameter to override auto-selection.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -381,6 +455,15 @@ async def handle_list_tools() -> list[types.Tool]:
                         "type": "string",
                         "description": "Optional custom prompt for analysis (uses default accessibility-focused prompt if not provided)",
                     },
+                    "backend": {
+                        "type": "string",
+                        "enum": ["ollama", "openvino", "llamafile"],
+                        "description": "Optional: Force specific backend ('ollama', 'openvino', or 'llamafile'). If not specified, automatically selects based on network/availability.",
+                    },
+                    "ollama_host": {
+                        "type": "string",
+                        "description": "Optional: Override Ollama server host (e.g., 'http://192.168.1.100:11434')",
+                    },
                     "write_metadata": {
                         "type": "boolean",
                         "description": "Whether to write the description to image metadata (default: true)",
@@ -391,7 +474,7 @@ async def handle_list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="analyze_images_batch",
-            description="Analyze multiple images in batch using a local vision LLM. Generates descriptions for each image and writes them to EXIF/XMP metadata. Uses on-device AI for privacy. Maximum 10 images per batch.",
+            description="Analyze multiple images in batch using multi-backend vision system (automatically selects best backend based on network). Auto-selection: At home → Ollama (GPU, fastest ~50-150 tok/s), Traveling → OpenVINO (NPU ~20-50 tok/s), Fallback → llamafile (CPU ~2-5 tok/s). Generates descriptions for each image and writes them to EXIF/XMP metadata. Uses on-device AI for privacy. Maximum 10 images per batch.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -403,6 +486,15 @@ async def handle_list_tools() -> list[types.Tool]:
                     "prompt": {
                         "type": "string",
                         "description": "Optional custom prompt for analysis (applies to all images)",
+                    },
+                    "backend": {
+                        "type": "string",
+                        "enum": ["ollama", "openvino", "llamafile"],
+                        "description": "Optional: Force specific backend ('ollama', 'openvino', or 'llamafile'). If not specified, automatically selects based on network/availability.",
+                    },
+                    "ollama_host": {
+                        "type": "string",
+                        "description": "Optional: Override Ollama server host (e.g., 'http://192.168.1.100:11434')",
                     },
                     "write_metadata": {
                         "type": "boolean",
@@ -686,7 +778,7 @@ async def handle_list_tools() -> list[types.Tool]:
             ),
             types.Tool(
                 name="query_emails",
-                description="Query emails from Evolution. FAST: Uses SQLite indexes for instant searches across 190,000+ emails. Searches last 7 days by default. Supports filtering by sender, recipient, subject, date. No timeout needed - queries are <1ms! NOTE: Queries email metadata (subject, sender, date) from SQLite database. Evolution should be running for best results - it caches email bodies when accessing IMAP accounts.",
+                description="Query emails from Evolution. FAST: Uses SQLite indexes for instant searches across 190,000+ emails. Searches last 7 days by default. Supports filtering by sender, recipient, subject, date. No timeout needed - queries are <1ms! NOTE: Queries email metadata (subject, sender, date) from SQLite database. Evolution should be running for best results - it caches email bodies when accessing IMAP accounts. IMPORTANT FOR SENT MAIL: When user asks 'who did I email' or 'emails I sent', you MUST: (1) call get_email_accounts to get the user's email address, (2) set sender parameter to that email address to filter by sent emails. Evolution does NOT have separate folder filtering - use sender/recipient to distinguish sent vs received.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -697,7 +789,7 @@ async def handle_list_tools() -> list[types.Tool]:
                         "folder_names": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "List of folder names to search (e.g., ['INBOX', 'Sent Mail']). If not specified, defaults to INBOX and Sent Mail only for performance.",
+                            "description": "DEPRECATED: Evolution stores all emails in one database table regardless of folder. Use 'sender' and 'recipient' parameters instead to filter sent vs received emails. This parameter is kept for backward compatibility but has no effect.",
                         },
                         "days_back": {
                             "type": "number",
@@ -705,11 +797,11 @@ async def handle_list_tools() -> list[types.Tool]:
                         },
                         "sender": {
                             "type": "string",
-                            "description": "Filter by sender email address (e.g., 'nikshi@gmail.com'). Case-insensitive partial match.",
+                            "description": "Filter by sender email address (e.g., 'nikshi@gmail.com'). Case-insensitive partial match. CRITICAL FOR SENT MAIL: When user asks 'who did I email' or 'emails I sent', set this to the user's email address (from get_email_accounts) to find sent emails.",
                         },
                         "recipient": {
                             "type": "string",
-                            "description": "Filter by recipient email address (in To or CC). Case-insensitive partial match.",
+                            "description": "Filter by recipient email address (in To or CC). Case-insensitive partial match. Use this for 'emails to X' queries.",
                         },
                         "subject_contains": {
                             "type": "string",
@@ -979,7 +1071,7 @@ async def handle_list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="compose_email",
-            description="Open Evolution email composer with pre-filled content. The user can review and edit before sending. Use this when the user wants to draft an email.",
+            description="Open Evolution email composer with pre-filled content. Provides file paths that the user should manually attach (automated attachment via mailto: URLs is unreliable). SMART FEATURE: If more than 5 files are provided, they will be automatically zipped into a single archive - then user just needs to attach the one zip file. Perfect for sending documents, images, or any files.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1002,6 +1094,11 @@ async def handle_list_tools() -> list[types.Tool]:
                     "bcc": {
                         "type": "string",
                         "description": "BCC recipients (comma-separated, optional)",
+                    },
+                    "attachments": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of file paths to attach (absolute paths). Files will be validated before opening composer. If more than 5 files, they will be automatically zipped. Example: ['/home/user/Documents/report.pdf', '/home/user/Pictures/chart.png']",
                     },
                 },
                 "required": ["to"],
@@ -1757,14 +1854,33 @@ async def handle_call_tool(
         body = args.get('body', '')
         cc = args.get('cc')
         bcc = args.get('bcc')
+        attachments = args.get('attachments')
 
-        result = compose_email(to=to, subject=subject, body=body, cc=cc, bcc=bcc)
+        result = compose_email(to=to, subject=subject, body=body, cc=cc, bcc=bcc, attachments=attachments)
 
         if result['success']:
+            msg = f"✅ Email composer opened for {to}"
+
+            # Show attachment info clearly
+            if result.get('attachments_to_add'):
+                attachment_list = result['attachments_to_add']
+                if result.get('zipped'):
+                    msg += f"\n\n📎 ATTACHMENTS - Please manually attach this file:"
+                    msg += f"\n  {attachment_list[0]}"
+                    msg += f"\n  (Contains {result['original_file_count']} files)"
+                else:
+                    msg += f"\n\n📎 ATTACHMENTS - Please manually attach {len(attachment_list)} file(s):"
+                    for att_path in attachment_list:
+                        msg += f"\n  • {att_path}"
+
+            # Add debug info if present
+            if result.get('debug_info'):
+                msg += f"\n\n🔍 Debug: {result['debug_info']}"
+
             return [
                 types.TextContent(
                     type="text",
-                    text=serializer.to_json({'content': f"Email composer opened with pre-filled content for {to}"}),
+                    text=serializer.to_json({'content': msg}),
                 )
             ]
         else:
@@ -1961,6 +2077,66 @@ async def handle_call_tool(
             )
         ]
 
+    # Handle network scanning tool
+    if name == "scan_wifi_networks":
+        from ratatoskr_mcp_server.utils.network_scanner import scan_wifi_networks
+
+        args = arguments or {}
+        result = scan_wifi_networks(
+            rescan=args.get('rescan', True),
+            filter_pattern=args.get('filter_pattern'),
+            min_signal_strength=args.get('min_signal_strength', 0)
+        )
+
+        return [
+            types.TextContent(
+                type="text",
+                text=serializer.to_json({'content': result}),
+            )
+        ]
+
+    # Handle markdown to PDF conversion
+    if name == "convert_markdown_to_pdf":
+        from ratatoskr_mcp_server.utils.markdown_converter import (
+            convert_markdown_to_pdf,
+            convert_multiple_markdown_to_pdf
+        )
+
+        args = arguments or {}
+        markdown_path = args.get('markdown_path')
+        markdown_paths = args.get('markdown_paths')
+
+        # Single file conversion
+        if markdown_path:
+            result = convert_markdown_to_pdf(
+                markdown_path=markdown_path,
+                output_path=args.get('output_path'),
+                title=args.get('title'),
+                author=args.get('author'),
+                temporary=args.get('temporary', False)
+            )
+        # Batch conversion
+        elif markdown_paths:
+            result = convert_multiple_markdown_to_pdf(
+                markdown_paths=markdown_paths,
+                output_dir=args.get('output_dir'),
+                title=args.get('title'),
+                author=args.get('author'),
+                temporary=args.get('temporary', False)
+            )
+        else:
+            result = {
+                'success': False,
+                'error': 'Either markdown_path or markdown_paths is required'
+            }
+
+        return [
+            types.TextContent(
+                type="text",
+                text=serializer.to_json({'content': result}),
+            )
+        ]
+
     # Handle file operation tools
     if name in ["move_files", "copy_files", "trash_files", "rename_file", "create_directory", "remove_directory"]:
         from ratatoskr_mcp_server.utils import file_operations
@@ -2038,6 +2214,7 @@ async def handle_call_tool(
         "get_app_launch_stats": "ratatoskr://gnome/app-stats",
         "get_project_files": "ratatoskr://tracker/project-files",
         "get_file_statistics": "ratatoskr://tracker/file-stats",
+        "detect_network": "ratatoskr://system/network",
     }
 
     uri = tool_to_uri.get(name)
